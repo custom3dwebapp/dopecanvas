@@ -16,6 +16,12 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
+    /* Alias — mirror the Vite dev alias so TS resolves local source */
+    "paths": {
+      "dopecanvas": ["./src/index.ts"],
+      "dopecanvas/style.css": ["./src/dopecanvas.css"]
+    },
+
     /* Linting */
     "strict": true,
     "noUnusedLocals": true,

@@ -241,6 +241,12 @@ Other editors strip scripts during sanitization. DopeCanvas activates them. That
 
 The included `sample-report-charts.html` demo shows this in action: four Chart.js charts (bar, line, doughnut, horizontal bar) all driven by editable tables with live-updating totals, growth percentages, and KPI cards.
 
+### See it in action
+
+Edit a table cell and watch every chart, total, and KPI card update instantly:
+
+![Dynamic content demo](public/dynamic-content.gif)
+
 ---
 
 ## Features

@@ -7,9 +7,9 @@
 // Library styles — bundled into dopecanvas.css by Vite library build
 import './dopecanvas.css';
 
-// Main component
+// Main component & ref handle
 export { DopeCanvas } from './components/DopeCanvas';
-export type { DopeCanvasProps } from './components/DopeCanvas';
+export type { DopeCanvasProps, DopeCanvasHandle } from './components/DopeCanvas';
 
 // Core engines
 export { PageLayoutEngine } from './core/PageLayoutEngine';
@@ -18,6 +18,11 @@ export { DocumentEngine } from './core/DocumentEngine';
 
 // API
 export { DocumentAPI } from './api/DocumentAPI';
+
+// Toolbar components (optional — build your own or use these)
+export { Toolbar } from './components/Toolbar/Toolbar';
+export { TextToolbar } from './components/Toolbar/TextToolbar';
+export { PageSetupToolbar } from './components/Toolbar/PageSetupToolbar';
 
 // Types
 export type {

@@ -1,8 +1,13 @@
 // ============================================================
 // DopeCanvas — Main canvas component
 // ============================================================
-// The top-level React component that composes the toolbar,
-// paged view, and document engine together.
+// The top-level React component that composes the paged view
+// and document engine together.
+//
+// The toolbar is NOT rendered by default. Instead, all toolbar
+// actions are exposed via a ref-based API (DopeCanvasHandle).
+// Consumers can build their own toolbar UI or use the provided
+// Toolbar components separately.
 //
 // CRITICAL DESIGN: Content edits from the user update a ref,
 // NOT state. This prevents React from re-rendering (and thus
@@ -10,9 +15,8 @@
 // or external HTML loads trigger re-pagination.
 // ============================================================
 
-import React, { useMemo, useCallback, useState, useRef, useEffect } from 'react';
+import React, { useMemo, useCallback, useState, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { PagedView } from './PagedView';
-import { Toolbar } from './Toolbar/Toolbar';
 import { PageLayoutEngine } from '../core/PageLayoutEngine';
 import { EditableManager } from '../core/EditableManager';
 import type {
@@ -20,6 +24,44 @@ import type {
   PaginationResult,
 } from '../core/types';
 import { DEFAULT_PAGE_CONFIG } from '../core/types';
+
+// ----------------------------------------------------------
+// Public API handle exposed via ref
+// ----------------------------------------------------------
+
+export interface DopeCanvasHandle {
+  // Text formatting
+  /** Execute a formatting command (e.g. 'bold', 'italic', 'fontSize') */
+  execCommand: (command: string, value?: string) => boolean;
+  /** Check if a command is active for the current selection */
+  queryCommandState: (command: string) => boolean;
+  /** Get the value of a command for the current selection */
+  queryCommandValue: (command: string) => string;
+
+  // Page configuration
+  /** Get the current page configuration */
+  getPageConfig: () => PageConfig;
+  /** Update page configuration (size, margins). Triggers re-pagination. */
+  setPageConfig: (config: Partial<PageConfig>) => void;
+  /** Get the current number of pages */
+  getPageCount: () => number;
+
+  // Content access
+  /** Get the current document HTML (reflects user edits) */
+  getHTML: () => string;
+  /** Get the document content as plain text */
+  getPlainText: () => string;
+
+  // Undo / Redo
+  /** Undo the last edit. Returns false if nothing to undo. */
+  undo: () => boolean;
+  /** Redo the last undone edit. Returns false if nothing to redo. */
+  redo: () => boolean;
+}
+
+// ----------------------------------------------------------
+// Component props
+// ----------------------------------------------------------
 
 export interface DopeCanvasProps {
   /** Initial HTML content to load */
@@ -36,14 +78,14 @@ export interface DopeCanvasProps {
   style?: React.CSSProperties;
 }
 
-export const DopeCanvas: React.FC<DopeCanvasProps> = ({
+export const DopeCanvas = forwardRef<DopeCanvasHandle, DopeCanvasProps>(({
   html = '',
   css,
   pageConfig: externalPageConfig,
   onContentChange,
   onPageConfigChange,
   style,
-}) => {
+}, ref) => {
   const [internalPageConfig, setInternalPageConfig] = useState<PageConfig>(
     externalPageConfig || DEFAULT_PAGE_CONFIG
   );
@@ -79,7 +121,7 @@ export const DopeCanvas: React.FC<DopeCanvasProps> = ({
     []
   );
 
-  // Handle page config changes from toolbar
+  // Handle page config changes
   const handlePageConfigChange = useCallback(
     (newConfig: Partial<PageConfig>) => {
       const updated = {
@@ -102,13 +144,34 @@ export const DopeCanvas: React.FC<DopeCanvasProps> = ({
     setPaginationResult(result);
   }, []);
 
-  // Formatting commands
-  const execCommand = useCallback(
-    (command: string, value?: string) => {
-      editableManager.execCommand(command, value);
+  // ----------------------------------------------------------
+  // Expose API via ref
+  // ----------------------------------------------------------
+
+  useImperativeHandle(ref, () => ({
+    execCommand: (command: string, value?: string) => {
+      return editableManager.execCommand(command, value);
     },
-    [editableManager]
-  );
+    queryCommandState: (command: string) => {
+      return editableManager.queryCommandState(command);
+    },
+    queryCommandValue: (command: string) => {
+      return editableManager.queryCommandValue(command);
+    },
+    getPageConfig: () => ({ ...pageConfig }),
+    setPageConfig: (config: Partial<PageConfig>) => {
+      handlePageConfigChange(config);
+    },
+    getPageCount: () => paginationResult.pageCount,
+    getHTML: () => currentHTMLRef.current,
+    getPlainText: () => {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = currentHTMLRef.current;
+      return tmp.innerText || tmp.textContent || '';
+    },
+    undo: () => editableManager.undo(),
+    redo: () => editableManager.redo(),
+  }), [editableManager, pageConfig, paginationResult.pageCount, handlePageConfigChange]);
 
   return (
     <div
@@ -122,14 +185,6 @@ export const DopeCanvas: React.FC<DopeCanvasProps> = ({
         ...style,
       }}
     >
-      {/* Toolbar */}
-      <Toolbar
-        pageConfig={pageConfig}
-        pageCount={paginationResult.pageCount}
-        onExecCommand={execCommand}
-        onPageConfigChange={handlePageConfigChange}
-      />
-
       {/* Paged document view */}
       <PagedView
         html={html}
@@ -142,4 +197,4 @@ export const DopeCanvas: React.FC<DopeCanvasProps> = ({
       />
     </div>
   );
-};
+});
