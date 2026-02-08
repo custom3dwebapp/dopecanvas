@@ -245,7 +245,7 @@ The included `sample-report-charts.html` demo shows this in action: four Chart.j
 
 Edit a table cell and watch every chart, total, and KPI card update instantly:
 
-![Dynamic content demo](public/dynamic.gif)
+![Dynamic content demo](https://raw.githubusercontent.com/custom3dwebapp/dopecanvas/refs/heads/main/public/dynamic.gif)
 
 ---
 
