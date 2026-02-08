@@ -19,24 +19,136 @@ const SAMPLE_REPORTS = [
   { id: 'charts', label: 'Sales Report (Charts)', url: '/sample-report-charts.html' },
 ];
 
+// localStorage keys
+const LS_PREFIX = 'dopecanvas_saved_';
+const LS_ACTIVE_REPORT = 'dopecanvas_active_report';
+
+type SaveStatus = 'saved' | 'unsaved' | 'saving';
+
 function App() {
   const [html, setHtml] = useState<string>('');
   const [loading, setLoading] = useState(true);
-  const [activeReport, setActiveReport] = useState(SAMPLE_REPORTS[0].id);
+  const [activeReport, setActiveReport] = useState(() => {
+    return localStorage.getItem(LS_ACTIVE_REPORT) || SAMPLE_REPORTS[0].id;
+  });
   const [showAPIPanel, setShowAPIPanel] = useState(false);
   const [apiOutput, setApiOutput] = useState<string>('');
+
+  // Save state
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSavedRef = useRef<string>('');
 
   // Ref to the DopeCanvas API handle
   const canvasRef = useRef<DopeCanvasHandle>(null);
 
-  // Load selected sample report
+  // ----------------------------------------------------------
+  // Save / Load helpers
+  // ----------------------------------------------------------
+
+  /** Save the current document HTML to localStorage */
+  const saveDocument = useCallback(() => {
+    if (!canvasRef.current) return;
+    const currentHTML = canvasRef.current.getHTML();
+    setSaveStatus('saving');
+    try {
+      localStorage.setItem(LS_PREFIX + activeReport, currentHTML);
+      localStorage.setItem(LS_ACTIVE_REPORT, activeReport);
+      lastSavedRef.current = currentHTML;
+      setSaveStatus('saved');
+    } catch (err) {
+      console.error('Failed to save document:', err);
+      setSaveStatus('unsaved');
+    }
+  }, [activeReport]);
+
+  /** Download the current document as an HTML file */
+  const downloadDocument = useCallback(() => {
+    if (!canvasRef.current) return;
+    const currentHTML = canvasRef.current.getHTML();
+    const report = SAMPLE_REPORTS.find((r) => r.id === activeReport);
+    const filename = `${report?.label?.replace(/\s+/g, '-').toLowerCase() || 'document'}.html`;
+
+    const blob = new Blob([currentHTML], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [activeReport]);
+
+  /** Called by DopeCanvas when content changes */
+  const handleContentChange = useCallback((_updatedHTML: string) => {
+    setSaveStatus('unsaved');
+
+    // Debounced auto-save (2 seconds after last edit)
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = setTimeout(() => {
+      // Re-read from ref at save time for latest content
+      if (!canvasRef.current) return;
+      const latestHTML = canvasRef.current.getHTML();
+      setSaveStatus('saving');
+      try {
+        localStorage.setItem(LS_PREFIX + activeReport, latestHTML);
+        lastSavedRef.current = latestHTML;
+        setSaveStatus('saved');
+      } catch (err) {
+        console.error('Auto-save failed:', err);
+        setSaveStatus('unsaved');
+      }
+    }, 2000);
+  }, [activeReport]);
+
+  // ----------------------------------------------------------
+  // Keyboard shortcut: Cmd/Ctrl + S
+  // ----------------------------------------------------------
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        saveDocument();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [saveDocument]);
+
+  // Clean up auto-save timer on unmount
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Load selected sample report (or saved version from localStorage)
   useEffect(() => {
     const report = SAMPLE_REPORTS.find((r) => r.id === activeReport) || SAMPLE_REPORTS[0];
+
+    // Check for a saved version first
+    const savedHTML = localStorage.getItem(LS_PREFIX + activeReport);
+    if (savedHTML) {
+      setHtml(savedHTML);
+      lastSavedRef.current = savedHTML;
+      setSaveStatus('saved');
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     fetch(report.url)
       .then((res) => res.text())
       .then((text) => {
         setHtml(text);
+        lastSavedRef.current = text;
+        setSaveStatus('saved');
         setLoading(false);
       })
       .catch((err) => {
@@ -53,6 +165,8 @@ function App() {
           </p>
         `;
         setHtml(fallback);
+        lastSavedRef.current = fallback;
+        setSaveStatus('saved');
         setLoading(false);
       });
   }, [activeReport]);
@@ -109,6 +223,7 @@ function App() {
         <DopeCanvas
           ref={canvasRef}
           html={html}
+          onContentChange={handleContentChange}
         />
       </div>
 
@@ -120,7 +235,10 @@ function App() {
         {SAMPLE_REPORTS.map((report) => (
           <button
             key={report.id}
-            onClick={() => setActiveReport(report.id)}
+            onClick={() => {
+              localStorage.setItem(LS_ACTIVE_REPORT, report.id);
+              setActiveReport(report.id);
+            }}
             style={{
               ...apiButtonStyle,
               backgroundColor: activeReport === report.id ? '#1a1a2e' : '#fff',
@@ -149,6 +267,47 @@ function App() {
         <button onClick={handleRedo} style={apiButtonStyle}>
           Redo
         </button>
+
+        <span style={dividerStyle} />
+
+        <span style={{ fontSize: '12px', color: '#666', fontWeight: 500 }}>
+          Save:
+        </span>
+        <button
+          onClick={saveDocument}
+          style={{
+            ...apiButtonStyle,
+            backgroundColor: saveStatus === 'unsaved' ? '#1a1a2e' : '#fff',
+            color: saveStatus === 'unsaved' ? '#fff' : '#333',
+            borderColor: saveStatus === 'unsaved' ? '#1a1a2e' : '#ccc',
+          }}
+          title="Save (Ctrl+S / Cmd+S)"
+        >
+          {saveStatus === 'saving' ? 'Saving...' : 'Save'}
+        </button>
+        <button onClick={downloadDocument} style={apiButtonStyle} title="Download as HTML file">
+          Download
+        </button>
+        <button
+          onClick={() => {
+            if (confirm('Reset to the original report? Your saved edits will be lost.')) {
+              localStorage.removeItem(LS_PREFIX + activeReport);
+              // Force reload from original by toggling the active report
+              const current = activeReport;
+              setActiveReport('');
+              requestAnimationFrame(() => setActiveReport(current));
+            }
+          }}
+          style={apiButtonStyle}
+          title="Reset to original (discard saved edits)"
+        >
+          Reset
+        </button>
+        <span style={saveIndicatorStyle(saveStatus)}>
+          {saveStatus === 'saved' && '● Saved'}
+          {saveStatus === 'unsaved' && '○ Unsaved'}
+          {saveStatus === 'saving' && '◌ Saving...'}
+        </span>
 
         <span style={dividerStyle} />
 
@@ -254,5 +413,13 @@ const apiPreStyle: React.CSSProperties = {
   margin: 0,
   lineHeight: 1.5,
 };
+
+const saveIndicatorStyle = (status: SaveStatus): React.CSSProperties => ({
+  fontSize: '11px',
+  fontWeight: 500,
+  color: status === 'saved' ? '#4caf50' : status === 'saving' ? '#ff9800' : '#999',
+  fontFamily: 'system-ui, -apple-system, sans-serif',
+  whiteSpace: 'nowrap',
+});
 
 export default App;

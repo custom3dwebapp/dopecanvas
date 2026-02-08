@@ -95,6 +95,8 @@ export const DopeCanvas = forwardRef<DopeCanvasHandle, DopeCanvasProps>(({
   });
   // Store the latest HTML in a ref — edits update this without triggering re-render
   const currentHTMLRef = useRef(html);
+  // Root container ref — used to read live DOM content in getHTML()
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // Stable callback ref for onContentChange so PagedView doesn't re-render
   const onContentChangeRef = useRef(onContentChange);
@@ -163,10 +165,44 @@ export const DopeCanvas = forwardRef<DopeCanvasHandle, DopeCanvasProps>(({
       handlePageConfigChange(config);
     },
     getPageCount: () => paginationResult.pageCount,
-    getHTML: () => currentHTMLRef.current,
+    getHTML: () => {
+      // Read directly from the live DOM so edits are never missed
+      // (the MutationObserver in PagedView debounces updates to the ref,
+      //  so the ref can be stale if getHTML is called right after an edit)
+      if (rootRef.current) {
+        const contentDivs = rootRef.current.querySelectorAll(
+          '.dopecanvas-block-content'
+        );
+        if (contentDivs.length > 0) {
+          const parts: string[] = [];
+          contentDivs.forEach((div) => {
+            const child = div.firstElementChild as HTMLElement;
+            if (child) parts.push(child.outerHTML);
+          });
+          if (parts.length > 0) {
+            const freshHTML = parts.join('\n');
+            currentHTMLRef.current = freshHTML; // keep ref in sync
+            return freshHTML;
+          }
+        }
+      }
+      return currentHTMLRef.current;
+    },
     getPlainText: () => {
+      // Also read from live DOM for consistency
+      const liveHTML = rootRef.current
+        ? (() => {
+            const divs = rootRef.current!.querySelectorAll('.dopecanvas-block-content');
+            const parts: string[] = [];
+            divs.forEach((d) => {
+              const child = d.firstElementChild as HTMLElement;
+              if (child) parts.push(child.outerHTML);
+            });
+            return parts.length > 0 ? parts.join('\n') : currentHTMLRef.current;
+          })()
+        : currentHTMLRef.current;
       const tmp = document.createElement('div');
-      tmp.innerHTML = currentHTMLRef.current;
+      tmp.innerHTML = liveHTML;
       return tmp.innerText || tmp.textContent || '';
     },
     undo: () => editableManager.undo(),
@@ -175,6 +211,7 @@ export const DopeCanvas = forwardRef<DopeCanvasHandle, DopeCanvasProps>(({
 
   return (
     <div
+      ref={rootRef}
       className="dopecanvas-root"
       style={{
         display: 'flex',
