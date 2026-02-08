@@ -12,6 +12,8 @@
 
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Page } from './Page';
+import { BlockToolbar } from './BlockToolbar';
+import { HTMLEditorModal } from './HTMLEditorModal';
 import type { PageLayoutEngine } from '../core/PageLayoutEngine';
 import type { EditableManager } from '../core/EditableManager';
 import type {
@@ -81,7 +83,7 @@ interface CursorState {
   textOffset: number;
 }
 
-/** Save the current cursor position relative to block wrappers */
+/** Save the current cursor position relative to block content divs */
 function saveCursorPosition(container: HTMLElement): CursorState | null {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) return null;
@@ -90,7 +92,7 @@ function saveCursorPosition(container: HTMLElement): CursorState | null {
   const anchorNode = range.startContainer;
 
   const wrappers = Array.from(
-    container.querySelectorAll('.dopecanvas-block-wrapper')
+    container.querySelectorAll('.dopecanvas-block-content')
   );
   const blockIndex = wrappers.findIndex((w) => w.contains(anchorNode));
   if (blockIndex === -1) return null;
@@ -112,7 +114,7 @@ function restoreCursorPosition(
   container: HTMLElement,
   state: CursorState
 ): void {
-  const wrappers = container.querySelectorAll('.dopecanvas-block-wrapper');
+  const wrappers = container.querySelectorAll('.dopecanvas-block-content');
   if (state.blockIndex >= wrappers.length) return;
 
   const wrapper = wrappers[state.blockIndex];
@@ -150,6 +152,24 @@ function restoreCursorPosition(
   }
 }
 
+/**
+ * Memoized block content — prevents React from re-rendering (and
+ * resetting innerHTML) when unrelated state like hoveredBlockIndex
+ * changes. User edits via contentEditable are preserved.
+ */
+const MemoizedBlockContent = React.memo<{
+  html: string;
+  isEditable: boolean;
+  isTable: boolean;
+}>(({ html, isEditable, isTable }) => (
+  <div
+    className="dopecanvas-block-content"
+    contentEditable={isEditable && !isTable ? true : undefined}
+    suppressContentEditableWarning
+    dangerouslySetInnerHTML={{ __html: html }}
+  />
+));
+
 export const PagedView: React.FC<PagedViewProps> = ({
   html,
   css,
@@ -173,6 +193,12 @@ export const PagedView: React.FC<PagedViewProps> = ({
   const isRePaginatingRef = useRef(false);
   const pagesRef = useRef<PageData[]>([]);
 
+  // Block management state
+  const [hoveredBlockIndex, setHoveredBlockIndex] = useState<number | null>(null);
+  const [editingBlockIndex, setEditingBlockIndex] = useState<number | null>(null);
+  const [editingHTML, setEditingHTML] = useState<string>('');
+  const hideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Resolve page dimensions
   const dimensions =
     typeof pageConfig.size === 'string'
@@ -186,14 +212,13 @@ export const PagedView: React.FC<PagedViewProps> = ({
   const collectHTMLFromDOM = useCallback(() => {
     if (!pagesContainerRef.current) return;
 
-    const wrappers = pagesContainerRef.current.querySelectorAll(
-      '.dopecanvas-block-wrapper'
+    const contentDivs = pagesContainerRef.current.querySelectorAll(
+      '.dopecanvas-block-content'
     );
 
     const htmlParts: string[] = [];
-    wrappers.forEach((wrapper) => {
-      // The wrapper contains the actual content element
-      const content = wrapper.firstElementChild as HTMLElement;
+    contentDivs.forEach((contentDiv) => {
+      const content = contentDiv.firstElementChild as HTMLElement;
       if (content) {
         htmlParts.push(content.outerHTML);
       }
@@ -202,6 +227,49 @@ export const PagedView: React.FC<PagedViewProps> = ({
     const updatedHTML = htmlParts.join('\n');
     onContentChangeRef.current?.(updatedHTML);
   }, []);
+
+  // ----------------------------------------------------------
+  // Shared pagination: measure + paginate any HTML string
+  // ----------------------------------------------------------
+
+  const paginateHTML = useCallback((htmlContent: string) => {
+    if (!measureRef.current) return;
+
+    const mc = measureRef.current;
+    mc.style.width = `${layoutEngine.getContentAreaWidth()}px`;
+    mc.style.position = 'absolute';
+    mc.style.left = '-9999px';
+    mc.style.top = '0';
+    mc.style.visibility = 'hidden';
+    mc.innerHTML = '';
+
+    if (css) {
+      const styleEl = document.createElement('style');
+      styleEl.textContent = css;
+      mc.appendChild(styleEl);
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = htmlContent;
+    mc.appendChild(wrapper);
+
+    const measurements = layoutEngine.measureBlocks(wrapper);
+    const blockHTMLs = measurements.map(
+      (m) => (m.element.cloneNode(true) as HTMLElement).outerHTML
+    );
+    const result = layoutEngine.paginate(measurements);
+
+    const pageData: PageData[] = result.pages.map((page) => ({
+      blocks: page.blockIndices.map((idx) => blockHTMLs[idx]),
+    }));
+
+    mc.innerHTML = '';
+
+    pagesRef.current = pageData;
+    setPages(pageData);
+    onPaginationChange?.(result);
+    onContentChangeRef.current?.(htmlContent);
+  }, [css, layoutEngine, onPaginationChange]);
 
   // ----------------------------------------------------------
   // Live re-pagination — runs after user edits change block sizes
@@ -216,10 +284,10 @@ export const PagedView: React.FC<PagedViewProps> = ({
     const cursor = saveCursorPosition(container);
 
     // Collect block HTML from the live DOM
-    const wrappers = container.querySelectorAll('.dopecanvas-block-wrapper');
+    const contentDivs = container.querySelectorAll('.dopecanvas-block-content');
     const blockHTMLs: string[] = [];
-    wrappers.forEach((w) => {
-      const content = w.firstElementChild as HTMLElement;
+    contentDivs.forEach((div) => {
+      const content = div.firstElementChild as HTMLElement;
       if (content) blockHTMLs.push(content.outerHTML);
     });
     if (blockHTMLs.length === 0) return;
@@ -282,26 +350,6 @@ export const PagedView: React.FC<PagedViewProps> = ({
   // ----------------------------------------------------------
 
   const runPagination = useCallback(() => {
-    if (!measureRef.current) return;
-
-    const measureContainer = measureRef.current;
-    const contentWidth = layoutEngine.getContentAreaWidth();
-
-    // Set up hidden measurement container
-    measureContainer.style.width = `${contentWidth}px`;
-    measureContainer.style.position = 'absolute';
-    measureContainer.style.left = '-9999px';
-    measureContainer.style.top = '0';
-    measureContainer.style.visibility = 'hidden';
-    measureContainer.innerHTML = '';
-
-    // Inject CSS if provided via prop
-    if (css) {
-      const styleEl = document.createElement('style');
-      styleEl.textContent = css;
-      measureContainer.appendChild(styleEl);
-    }
-
     // Parse the LLM-authored HTML.
     // An LLM may produce a full document (<!DOCTYPE html><html><head>
     // <style>…</style></head><body>…</body></html>) or a plain fragment.
@@ -318,42 +366,92 @@ export const PagedView: React.FC<PagedViewProps> = ({
         parsed.body.insertBefore(el, parsed.body.firstChild);
       });
 
-    const contentHTML = parsed.body.innerHTML;
-
-    // Inject content into a wrapper for measurement
-    const wrapper = document.createElement('div');
-    wrapper.innerHTML = contentHTML;
-    measureContainer.appendChild(wrapper);
-
-    // Measure all blocks
-    const measurements = layoutEngine.measureBlocks(wrapper);
-
-    // Clone block elements and get their HTML
-    const blockHTMLs = measurements.map(
-      (m) => (m.element.cloneNode(true) as HTMLElement).outerHTML
-    );
-
-    // Run pagination algorithm
-    const result = layoutEngine.paginate(measurements);
-
-    // Build page data (HTML strings, not live elements)
-    const pageData: PageData[] = result.pages.map((page) => ({
-      blocks: page.blockIndices.map((idx) => blockHTMLs[idx]),
-    }));
-
-    // Clean up
-    measureContainer.innerHTML = '';
-
-    // Update state — this triggers a React render
-    pagesRef.current = pageData;
-    setPages(pageData);
-    onPaginationChange?.(result);
-  }, [html, css, layoutEngine, onPaginationChange]);
+    paginateHTML(parsed.body.innerHTML);
+  }, [html, paginateHTML]);
 
   // Run pagination when html or pageConfig changes
   useEffect(() => {
     runPagination();
   }, [runPagination]);
+
+  // ----------------------------------------------------------
+  // Block management — add / delete / edit HTML
+  // ----------------------------------------------------------
+
+  /** Collect all block outerHTMLs from the live DOM */
+  const collectBlocksFromDOM = useCallback((): string[] => {
+    if (!pagesContainerRef.current) return [];
+    const contentDivs = pagesContainerRef.current.querySelectorAll(
+      '.dopecanvas-block-content'
+    );
+    const blocks: string[] = [];
+    contentDivs.forEach((div) => {
+      const child = div.firstElementChild as HTMLElement;
+      if (child) blocks.push(child.outerHTML);
+    });
+    return blocks;
+  }, []);
+
+  /** Add a new empty block below the given global index */
+  const handleAddBlock = useCallback(
+    (globalIndex: number) => {
+      const blocks = collectBlocksFromDOM();
+      blocks.splice(
+        globalIndex + 1,
+        0,
+        '<p style="min-height: 1.5em; line-height: 1.6;">&nbsp;</p>'
+      );
+      setHoveredBlockIndex(null);
+      paginateHTML(blocks.join('\n'));
+    },
+    [collectBlocksFromDOM, paginateHTML]
+  );
+
+  /** Delete the block at the given global index */
+  const handleDeleteBlock = useCallback(
+    (globalIndex: number) => {
+      const blocks = collectBlocksFromDOM();
+      if (blocks.length <= 1) return; // keep at least one block
+      blocks.splice(globalIndex, 1);
+      setHoveredBlockIndex(null);
+      paginateHTML(blocks.join('\n'));
+    },
+    [collectBlocksFromDOM, paginateHTML]
+  );
+
+  /** Open the HTML source editor for the given block */
+  const handleOpenEditor = useCallback(
+    (globalIndex: number) => {
+      const blocks = collectBlocksFromDOM();
+      if (globalIndex < blocks.length) {
+        setEditingBlockIndex(globalIndex);
+        setEditingHTML(blocks[globalIndex]);
+      }
+    },
+    [collectBlocksFromDOM]
+  );
+
+  /** Save edited HTML and re-paginate */
+  const handleSaveHTML = useCallback(
+    (newHTML: string) => {
+      if (editingBlockIndex === null) return;
+      const blocks = collectBlocksFromDOM();
+      if (editingBlockIndex < blocks.length) {
+        blocks[editingBlockIndex] = newHTML;
+      }
+      setEditingBlockIndex(null);
+      setEditingHTML('');
+      setHoveredBlockIndex(null);
+      paginateHTML(blocks.join('\n'));
+    },
+    [editingBlockIndex, collectBlocksFromDOM, paginateHTML]
+  );
+
+  /** Cancel the HTML editor */
+  const handleCancelEditor = useCallback(() => {
+    setEditingBlockIndex(null);
+    setEditingHTML('');
+  }, []);
 
   // ----------------------------------------------------------
   // After pages render: make editable + observe changes
@@ -368,22 +466,19 @@ export const PagedView: React.FC<PagedViewProps> = ({
       mutationObserverRef.current.disconnect();
     }
 
-    // Make all blocks contentEditable
-    const blockWrappers = container.querySelectorAll('.dopecanvas-block-wrapper');
-    blockWrappers.forEach((wrapper) => {
-      const child = wrapper.firstElementChild as HTMLElement;
+    // Make table cells individually editable.
+    // Non-table blocks get contentEditable from their React prop;
+    // tables need cell-level editability so users can't break table structure.
+    const blockContents = container.querySelectorAll('.dopecanvas-block-content');
+    blockContents.forEach((contentDiv) => {
+      const child = contentDiv.firstElementChild as HTMLElement;
       if (!child) return;
 
       if (child.tagName === 'TABLE') {
-        // For tables, make individual cells editable
         const cells = child.querySelectorAll('td, th');
         cells.forEach((cell) => {
           (cell as HTMLElement).contentEditable = 'true';
         });
-      } else if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE') {
-        // Don't make script/style blocks editable
-      } else {
-        child.contentEditable = 'true';
       }
     });
 
@@ -448,23 +543,68 @@ export const PagedView: React.FC<PagedViewProps> = ({
       {/* Visible pages */}
       <div ref={pagesContainerRef} style={pagesWrapperStyle}>
         {css && <style dangerouslySetInnerHTML={{ __html: css }} />}
-        {pages.map((pageData, pageIndex) => (
-          <Page
-            key={pageIndex}
-            dimensions={dimensions}
-            margins={pageConfig.margins}
-            pageNumber={pageIndex + 1}
-            totalPages={pages.length}
-          >
-            {pageData.blocks.map((blockHTML, blockIndex) => (
-              <div
-                key={`${pageIndex}-${blockIndex}`}
-                className="dopecanvas-block-wrapper"
-                dangerouslySetInnerHTML={{ __html: blockHTML }}
-              />
-            ))}
-          </Page>
-        ))}
+        {pages.map((pageData, pageIndex) => {
+          // Compute this page's starting global block index
+          const pageStartIdx = pages
+            .slice(0, pageIndex)
+            .reduce((sum, p) => sum + p.blocks.length, 0);
+
+          return (
+            <Page
+              key={pageIndex}
+              dimensions={dimensions}
+              margins={pageConfig.margins}
+              pageNumber={pageIndex + 1}
+              totalPages={pages.length}
+            >
+              {pageData.blocks.map((blockHTML, blockIndex) => {
+                const globalIdx = pageStartIdx + blockIndex;
+                const lower = blockHTML.trim().toLowerCase();
+                const isEditable =
+                  !lower.startsWith('<script') && !lower.startsWith('<style');
+
+                const isTable = lower.startsWith('<table');
+
+                return (
+                  <div
+                    key={`${pageIndex}-${blockIndex}`}
+                    className="dopecanvas-block-wrapper"
+                    style={{ position: 'relative' }}
+                    onMouseEnter={() => {
+                      if (!isEditable) return;
+                      if (hideTimeoutRef.current) {
+                        clearTimeout(hideTimeoutRef.current);
+                        hideTimeoutRef.current = null;
+                      }
+                      setHoveredBlockIndex(globalIdx);
+                    }}
+                    onMouseLeave={() => {
+                      hideTimeoutRef.current = setTimeout(() => {
+                        setHoveredBlockIndex((prev) =>
+                          prev === globalIdx ? null : prev
+                        );
+                      }, 250);
+                    }}
+                  >
+                    <MemoizedBlockContent
+                      html={blockHTML}
+                      isEditable={isEditable}
+                      isTable={isTable}
+                    />
+                    {isEditable && (
+                      <BlockToolbar
+                        visible={hoveredBlockIndex === globalIdx}
+                        onAddBelow={() => handleAddBlock(globalIdx)}
+                        onEditHTML={() => handleOpenEditor(globalIdx)}
+                        onDelete={() => handleDeleteBlock(globalIdx)}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </Page>
+          );
+        })}
 
         {/* Show at least one empty page if no content */}
         {pages.length === 0 && (
@@ -482,6 +622,15 @@ export const PagedView: React.FC<PagedViewProps> = ({
           </Page>
         )}
       </div>
+
+      {/* HTML Editor Modal */}
+      {editingBlockIndex !== null && (
+        <HTMLEditorModal
+          html={editingHTML}
+          onSave={handleSaveHTML}
+          onCancel={handleCancelEditor}
+        />
+      )}
     </div>
   );
 };
