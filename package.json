@@ -1,6 +1,6 @@
 {
   "name": "dopecanvas",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The office suite built for the AI era — a drop-in React component that renders LLM-generated HTML as paginated, editable documents.",
   "type": "module",
   "license": "MIT",
@@ -61,6 +61,7 @@
     "react-dom": "^18.0.0 || ^19.0.0"
   },
   "dependencies": {
+    "dopecanvas": "^0.1.0",
     "zustand": "^5.0.11"
   },
   "devDependencies": {

@@ -45,7 +45,15 @@ export default defineConfig(({ mode }) => {
   }
 
   // Default: development app build
+  // Alias 'dopecanvas' imports to local source so the demo app
+  // works without needing a built dist/ folder.
   return {
     plugins: [react()],
+    resolve: {
+      alias: {
+        'dopecanvas/style.css': resolve(__dirname, 'src/dopecanvas.css'),
+        'dopecanvas': resolve(__dirname, 'src/index.ts'),
+      },
+    },
   }
 })

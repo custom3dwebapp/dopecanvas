@@ -6,9 +6,8 @@
 // ============================================================
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { DopeCanvas } from './components/DopeCanvas';
-import { DocumentAPI } from './api/DocumentAPI';
-import type { PageConfig } from './core/types';
+import { DopeCanvas } from 'dopecanvas';
+import 'dopecanvas/style.css';
 
 // Sample reports (loaded from public folder)
 const SAMPLE_REPORTS = [
@@ -22,7 +21,8 @@ function App() {
   const [activeReport, setActiveReport] = useState(SAMPLE_REPORTS[0].id);
   const [showAPIPanel, setShowAPIPanel] = useState(false);
   const [apiOutput, setApiOutput] = useState<string>('');
-  const apiRef = useRef(new DocumentAPI());
+  // Track the latest HTML (including user edits) without re-rendering
+  const currentHTMLRef = useRef<string>('');
 
   // Load selected sample report
   useEffect(() => {
@@ -32,12 +32,12 @@ function App() {
       .then((res) => res.text())
       .then((text) => {
         setHtml(text);
+        currentHTMLRef.current = text;
         setLoading(false);
       })
       .catch((err) => {
         console.error('Failed to load sample report:', err);
-        // Fallback content
-        setHtml(`
+        const fallback = `
           <h1 style="color: #1a1a2e; font-family: Georgia, serif;">DopeCanvas</h1>
           <p style="color: #666; line-height: 1.6;">
             Welcome to DopeCanvas — an LLM-centric paged document framework. 
@@ -47,34 +47,30 @@ function App() {
             This is a fallback document. Place a <code>sample-report.html</code> file in the 
             <code>public/</code> folder for a full demo.
           </p>
-        `);
+        `;
+        setHtml(fallback);
+        currentHTMLRef.current = fallback;
         setLoading(false);
       });
   }, [activeReport]);
 
-  // Track content changes
+  // Track content changes from user edits
   const handleContentChange = useCallback((newHTML: string) => {
-    apiRef.current._notifyChange(newHTML);
-  }, []);
-
-  // Track page config changes
-  const handlePageConfigChange = useCallback((config: PageConfig) => {
-    apiRef.current._updatePageConfig(config);
+    currentHTMLRef.current = newHTML;
   }, []);
 
   // API panel actions
   const handleGetHTML = useCallback(() => {
-    setApiOutput(apiRef.current.getHTML() || html);
+    setApiOutput(currentHTMLRef.current);
     setShowAPIPanel(true);
-  }, [html]);
+  }, []);
 
   const handleGetPlainText = useCallback(() => {
-    // Create a temp div to extract text
     const tmp = document.createElement('div');
-    tmp.innerHTML = apiRef.current.getHTML() || html;
+    tmp.innerHTML = currentHTMLRef.current;
     setApiOutput(tmp.innerText || '');
     setShowAPIPanel(true);
-  }, [html]);
+  }, []);
 
   if (loading) {
     return (
@@ -91,7 +87,6 @@ function App() {
         <DopeCanvas
           html={html}
           onContentChange={handleContentChange}
-          onPageConfigChange={handlePageConfigChange}
         />
       </div>
 
