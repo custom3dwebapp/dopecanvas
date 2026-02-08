@@ -4,10 +4,10 @@
 // Takes HTML content, paginates it into visual pages, and makes
 // each block editable via contentEditable.
 //
-// CRITICAL: After initial pagination, the live DOM is the source
-// of truth. User edits update an internal ref (via onContentChange)
-// but do NOT trigger React re-renders. Only external HTML prop
-// changes or pageConfig changes trigger re-pagination.
+// After initial pagination, the live DOM is the source of truth.
+// User edits trigger live re-pagination when the block distribution
+// across pages changes (e.g. content grows past a page boundary).
+// Cursor position is saved/restored across re-pagination re-renders.
 // ============================================================
 
 import React, { useRef, useEffect, useCallback, useState } from 'react';
@@ -70,6 +70,86 @@ function activateScripts(container: HTMLElement): HTMLScriptElement[] {
   return activated;
 }
 
+// ----------------------------------------------------------
+// Cursor save / restore — used across re-pagination re-renders
+// ----------------------------------------------------------
+
+interface CursorState {
+  /** Global index of the block wrapper the cursor is inside */
+  blockIndex: number;
+  /** Character offset within that block's text content */
+  textOffset: number;
+}
+
+/** Save the current cursor position relative to block wrappers */
+function saveCursorPosition(container: HTMLElement): CursorState | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return null;
+
+  const range = sel.getRangeAt(0);
+  const anchorNode = range.startContainer;
+
+  const wrappers = Array.from(
+    container.querySelectorAll('.dopecanvas-block-wrapper')
+  );
+  const blockIndex = wrappers.findIndex((w) => w.contains(anchorNode));
+  if (blockIndex === -1) return null;
+
+  // Compute character offset within the block
+  try {
+    const preRange = document.createRange();
+    preRange.selectNodeContents(wrappers[blockIndex]);
+    preRange.setEnd(range.startContainer, range.startOffset);
+    const textOffset = preRange.toString().length;
+    return { blockIndex, textOffset };
+  } catch {
+    return null;
+  }
+}
+
+/** Restore cursor position after a re-pagination re-render */
+function restoreCursorPosition(
+  container: HTMLElement,
+  state: CursorState
+): void {
+  const wrappers = container.querySelectorAll('.dopecanvas-block-wrapper');
+  if (state.blockIndex >= wrappers.length) return;
+
+  const wrapper = wrappers[state.blockIndex];
+  const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_TEXT);
+  let remaining = state.textOffset;
+
+  while (walker.nextNode()) {
+    const textNode = walker.currentNode as Text;
+    if (remaining <= textNode.length) {
+      try {
+        const range = document.createRange();
+        range.setStart(textNode, remaining);
+        range.collapse(true);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      } catch {
+        // Best effort — position may have shifted
+      }
+      return;
+    }
+    remaining -= textNode.length;
+  }
+
+  // Fallback: place cursor at the end of the block
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(wrapper);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  } catch {
+    // Ignore
+  }
+}
+
 export const PagedView: React.FC<PagedViewProps> = ({
   html,
   css,
@@ -85,8 +165,13 @@ export const PagedView: React.FC<PagedViewProps> = ({
   const onContentChangeRef = useRef(onContentChange);
   onContentChangeRef.current = onContentChange;
 
-  // Pages state — only set during pagination (not during edits)
+  // Pages state — set during pagination AND live re-pagination
   const [pages, setPages] = useState<PageData[]>([]);
+
+  // Refs for live re-pagination
+  const pendingCursorRef = useRef<CursorState | null>(null);
+  const isRePaginatingRef = useRef(false);
+  const pagesRef = useRef<PageData[]>([]);
 
   // Resolve page dimensions
   const dimensions =
@@ -119,7 +204,81 @@ export const PagedView: React.FC<PagedViewProps> = ({
   }, []);
 
   // ----------------------------------------------------------
-  // Pagination — runs only on initial load and config changes
+  // Live re-pagination — runs after user edits change block sizes
+  // ----------------------------------------------------------
+
+  const rePaginateFromDOM = useCallback(() => {
+    if (!pagesContainerRef.current || !measureRef.current) return;
+
+    const container = pagesContainerRef.current;
+
+    // Save cursor position before we potentially re-render
+    const cursor = saveCursorPosition(container);
+
+    // Collect block HTML from the live DOM
+    const wrappers = container.querySelectorAll('.dopecanvas-block-wrapper');
+    const blockHTMLs: string[] = [];
+    wrappers.forEach((w) => {
+      const content = w.firstElementChild as HTMLElement;
+      if (content) blockHTMLs.push(content.outerHTML);
+    });
+    if (blockHTMLs.length === 0) return;
+
+    // Set up hidden measure container
+    const mc = measureRef.current;
+    const contentWidth = layoutEngine.getContentAreaWidth();
+    mc.style.width = `${contentWidth}px`;
+    mc.style.position = 'absolute';
+    mc.style.left = '-9999px';
+    mc.style.top = '0';
+    mc.style.visibility = 'hidden';
+    mc.innerHTML = '';
+
+    if (css) {
+      const styleEl = document.createElement('style');
+      styleEl.textContent = css;
+      mc.appendChild(styleEl);
+    }
+
+    const measureWrapper = document.createElement('div');
+    measureWrapper.innerHTML = blockHTMLs.join('\n');
+    mc.appendChild(measureWrapper);
+
+    // Measure and paginate
+    const measurements = layoutEngine.measureBlocks(measureWrapper);
+    const measuredHTMLs = measurements.map(
+      (m) => (m.element.cloneNode(true) as HTMLElement).outerHTML
+    );
+    const result = layoutEngine.paginate(measurements);
+    mc.innerHTML = '';
+
+    // Build new page data
+    const newPages: PageData[] = result.pages.map((p) => ({
+      blocks: p.blockIndices.map((idx) => measuredHTMLs[idx]),
+    }));
+
+    // Only re-render if the block distribution across pages actually changed
+    const oldDist = pagesRef.current.map((p) => p.blocks.length);
+    const newDist = newPages.map((p) => p.blocks.length);
+    const changed =
+      oldDist.length !== newDist.length ||
+      oldDist.some((count, i) => count !== newDist[i]);
+
+    if (changed) {
+      isRePaginatingRef.current = true;
+      pendingCursorRef.current = cursor;
+      pagesRef.current = newPages;
+      setPages(newPages);
+      onPaginationChange?.(result);
+    }
+  }, [css, layoutEngine, onPaginationChange]);
+
+  // Keep a stable ref so the MutationObserver closure always calls the latest version
+  const rePaginateFromDOMRef = useRef(rePaginateFromDOM);
+  rePaginateFromDOMRef.current = rePaginateFromDOM;
+
+  // ----------------------------------------------------------
+  // Pagination — runs on initial load and config changes
   // ----------------------------------------------------------
 
   const runPagination = useCallback(() => {
@@ -186,6 +345,7 @@ export const PagedView: React.FC<PagedViewProps> = ({
     measureContainer.innerHTML = '';
 
     // Update state — this triggers a React render
+    pagesRef.current = pageData;
     setPages(pageData);
     onPaginationChange?.(result);
   }, [html, css, layoutEngine, onPaginationChange]);
@@ -232,14 +392,16 @@ export const PagedView: React.FC<PagedViewProps> = ({
     // editability on specific cells (e.g. formula cells).
     const activatedScripts = activateScripts(container);
 
-    // Set up MutationObserver — collects HTML on changes but does NOT re-render
+    // Set up MutationObserver — collects HTML and re-paginates when needed
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     const observer = new MutationObserver(() => {
+      if (isRePaginatingRef.current) return;
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         collectHTMLFromDOM();
-      }, 200);
+        rePaginateFromDOMRef.current();
+      }, 300);
     });
 
     observer.observe(container, {
@@ -250,6 +412,22 @@ export const PagedView: React.FC<PagedViewProps> = ({
     });
 
     mutationObserverRef.current = observer;
+
+    // Restore cursor after a re-pagination re-render
+    if (pendingCursorRef.current) {
+      requestAnimationFrame(() => {
+        if (pendingCursorRef.current && pagesContainerRef.current) {
+          restoreCursorPosition(
+            pagesContainerRef.current,
+            pendingCursorRef.current
+          );
+          pendingCursorRef.current = null;
+        }
+        isRePaginatingRef.current = false;
+      });
+    } else {
+      isRePaginatingRef.current = false;
+    }
 
     return () => {
       observer.disconnect();
