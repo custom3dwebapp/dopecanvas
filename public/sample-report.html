@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  h1 { color: #1a1a2e; font-family: Georgia, serif; font-size: 26px; margin-bottom: 4px; }
+  h2 { color: #16213e; font-family: Georgia, serif; margin-top: 20px; }
+  p  { line-height: 1.7; color: #333; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  thead tr { background: #1a1a2e; color: #fff; }
+  th, td { padding: 10px 14px; text-align: left; }
+  th { font-weight: 600; }
+  tbody tr:nth-child(even) { background: #f8f9fa; }
+  tbody td { border-bottom: 1px solid #dee2e6; }
+  td.num { text-align: right; }
+  th.num { text-align: right; }
+  tr.total-row { background: #eef2ff !important; font-weight: bold; }
+  tr.total-row td { border-top: 2px solid #1a1a2e; border-bottom: 2px solid #1a1a2e; }
+  .fx { color: #6c5ce7; cursor: default; }
+  .note { font-size: 12px; color: #888; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<h1>Acme Corp — Team Overview 2025</h1>
+<p style="color: #666; font-size: 13px; margin-top: 0; border-bottom: 2px solid #1a1a2e; padding-bottom: 10px;">
+  Internal HR Summary · Prepared Q4 2025
+</p>
+
+<h2>About This Report</h2>
+<p>
+  This document provides a concise overview of Acme Corporation's team structure as of the end of
+  Q4 2025. The company has experienced significant growth across all departments, driven by our
+  expansion into EMEA and APAC markets and the launch of the enterprise platform in October 2025.
+</p>
+<p>
+  Employee satisfaction remains strong, with an overall score of 4.3 out of 5.0. Voluntary turnover
+  dropped to 8.2%, well below the industry average of 13%. Key senior hires during the year included
+  a new Chief Technology Officer, VP of Sales for EMEA, and Head of AI Research.
+</p>
+<p>
+  The following page breaks down headcount, budget, and satisfaction by department. The
+  <strong>Total</strong> row at the bottom is computed automatically — edit any department's numbers
+  and the total will update in real time.
+</p>
+
+<div style="break-before: page;"></div>
+
+<h2>Department Headcount & Budget</h2>
+
+<table id="dept">
+  <thead>
+    <tr>
+      <th>Department</th>
+      <th class="num">Headcount</th>
+      <th class="num">Budget</th>
+      <th class="num">Satisfaction</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Engineering</td>
+      <td class="num">185</td>
+      <td class="num">$14.8M</td>
+      <td class="num">4.5</td>
+    </tr>
+    <tr>
+      <td>Sales &amp; Marketing</td>
+      <td class="num">120</td>
+      <td class="num">$9.6M</td>
+      <td class="num">4.2</td>
+    </tr>
+    <tr>
+      <td>Product &amp; Design</td>
+      <td class="num">65</td>
+      <td class="num">$5.9M</td>
+      <td class="num">4.4</td>
+    </tr>
+    <tr>
+      <td>Operations</td>
+      <td class="num">75</td>
+      <td class="num">$4.5M</td>
+      <td class="num">4.1</td>
+    </tr>
+    <tr>
+      <td>Customer Success</td>
+      <td class="num">40</td>
+      <td class="num">$2.8M</td>
+      <td class="num">4.3</td>
+    </tr>
+    <tr class="total-row">
+      <td class="fx">Total</td>
+      <td class="num fx" id="total-hc">485</td>
+      <td class="num fx" id="total-budget">$37.6M</td>
+      <td class="num fx" id="total-sat">4.3</td>
+    </tr>
+  </tbody>
+</table>
+
+<p class="note">
+  Cells in <span class="fx">purple</span> are computed. Edit any department row and the totals update automatically.
+</p>
+
+<script>
+(function () {
+  var table = document.getElementById('dept');
+  if (!table) return;
+
+  function parseNum(text) {
+    var s = (text || '').replace(/[,$\s]/g, '').trim();
+    if (!s) return 0;
+    var mul = 1;
+    if (/m$/i.test(s)) { mul = 1e6; s = s.slice(0, -1); }
+    else if (/k$/i.test(s)) { mul = 1e3; s = s.slice(0, -1); }
+    s = s.replace(/[^0-9.\-]/g, '');
+    var n = parseFloat(s);
+    return isNaN(n) ? 0 : n * mul;
+  }
+
+  function recalc() {
+    var rows = table.querySelectorAll('tbody tr:not(.total-row)');
+    var totalHC = 0, totalBudget = 0, totalSatW = 0;
+
+    rows.forEach(function (tr) {
+      var cells = tr.querySelectorAll('td.num');
+      var hc   = parseNum(cells[0].textContent);
+      var budg = parseNum(cells[1].textContent);
+      var sat  = parseFloat(cells[2].textContent) || 0;
+
+      totalHC     += hc;
+      totalBudget += budg;
+      totalSatW   += sat * hc;   // weighted by headcount
+    });
+
+    document.getElementById('total-hc').textContent = Math.round(totalHC).toLocaleString();
+    document.getElementById('total-budget').textContent = '$' + (totalBudget / 1e6).toFixed(1) + 'M';
+    document.getElementById('total-sat').textContent = totalHC ? (totalSatW / totalHC).toFixed(1) : '—';
+  }
+
+  // Lock computed cells
+  table.querySelectorAll('.total-row .fx').forEach(function (td) {
+    td.contentEditable = 'false';
+  });
+
+  // Initial calculation & live updates
+  recalc();
+  table.addEventListener('input', recalc);
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,102 @@
+/* ============================================================
+   DopeCanvas — Global styles
+   ============================================================ */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #e8e8e8;
+}
+
+/* ============================================================
+   Page styles
+   ============================================================ */
+
+.dopecanvas-page {
+  transition: box-shadow 0.2s ease;
+}
+
+.dopecanvas-page:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18), 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+/* ============================================================
+   Editable content styles
+   ============================================================ */
+
+/* Remove default outline on contentEditable elements */
+[contenteditable="true"] {
+  outline: none;
+}
+
+/* Subtle highlight when hovering over an editable block.
+   Uses outline instead of background to avoid conflicts with
+   elements that use the `background` shorthand (e.g. gradients). */
+[contenteditable="true"]:hover {
+  outline: 1px solid rgba(66, 133, 244, 0.08);
+  border-radius: 2px;
+}
+
+/* Focus ring for the currently edited block */
+[contenteditable="true"]:focus {
+  outline: 1px solid rgba(66, 133, 244, 0.2);
+  border-radius: 2px;
+}
+
+/* ============================================================
+   Toolbar button hover states
+   ============================================================ */
+
+.dopecanvas-root button:hover {
+  background-color: #e8ecf0;
+  border-color: #c0c5cd;
+}
+
+.dopecanvas-root select:hover {
+  border-color: #999;
+}
+
+/* ============================================================
+   Scrollbar styling
+   ============================================================ */
+
+.dopecanvas-paged-view::-webkit-scrollbar {
+  width: 10px;
+}
+
+.dopecanvas-paged-view::-webkit-scrollbar-track {
+  background: #e0e0e0;
+}
+
+.dopecanvas-paged-view::-webkit-scrollbar-thumb {
+  background: #aaa;
+  border-radius: 5px;
+}
+
+.dopecanvas-paged-view::-webkit-scrollbar-thumb:hover {
+  background: #888;
+}
+
+/* ============================================================
+   Placeholder for empty editable areas
+   ============================================================ */
+
+[contenteditable="true"]:empty::before {
+  content: attr(data-placeholder);
+  color: #aaa;
+  pointer-events: none;
+  font-style: italic;
+}
