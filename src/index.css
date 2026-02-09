@@ -21,6 +21,26 @@ body {
   background-color: #e8e8e8;
 }
 
+/* Reset focus/active pseudo-class backgrounds on sidebar buttons
+   so that only the React-managed active state controls highlighting. */
+button:focus,
+button:active,
+button:focus-visible {
+  outline: none;
+}
+
+/* ============================================================
+   Sidebar document item — show delete button on hover
+   ============================================================ */
+
+.sidebar-doc-item:hover .sidebar-delete-btn {
+  opacity: 1 !important;
+}
+
+.sidebar-delete-btn:hover {
+  color: #e74c3c !important;
+}
+
 /* ============================================================
    Page styles
    ============================================================ */

@@ -58,6 +58,32 @@ export interface UndoSnapshot {
 /** Unsubscribe function returned by event listeners */
 export type Unsubscribe = () => void;
 
+/**
+ * Comprehensive formatting state for the current selection.
+ * Consumers use this to reflect active states in toolbar UI.
+ */
+export interface FormattingState {
+  // Toggle states (document.queryCommandState)
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  strikethrough: boolean;
+  justifyLeft: boolean;
+  justifyCenter: boolean;
+  justifyRight: boolean;
+  justifyFull: boolean;
+  orderedList: boolean;
+  unorderedList: boolean;
+  superscript: boolean;
+  subscript: boolean;
+  // Value states (document.queryCommandValue)
+  fontName: string;
+  fontSize: string;
+  foreColor: string;
+  backColor: string;
+  formatBlock: string;
+}
+
 // ============================================================
 // Page size presets (at 96 DPI)
 // ============================================================

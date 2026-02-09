@@ -10,7 +10,7 @@
 // Cursor position is saved/restored across re-pagination re-renders.
 // ============================================================
 
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useCallback, useState, useImperativeHandle, forwardRef } from 'react';
 import { Page } from './Page';
 import { BlockToolbar } from './BlockToolbar';
 import { HTMLEditorModal } from './HTMLEditorModal';
@@ -22,6 +22,13 @@ import type {
   PageSizeName,
 } from '../core/types';
 import { PAGE_SIZE_PRESETS } from '../core/types';
+import { trySplitBlock, recombineSplitBlocks } from '../core/BlockSplitter';
+
+/** Methods exposed by PagedView to its parent via ref */
+export interface PagedViewHandle {
+  /** Insert a page break after the block at the cursor, or at the end */
+  insertPageBreak: () => void;
+}
 
 interface PagedViewProps {
   /** The raw HTML content to render */
@@ -38,6 +45,8 @@ interface PagedViewProps {
   onContentChange?: (html: string) => void;
   /** Callback when pagination changes */
   onPaginationChange?: (result: PaginationResult) => void;
+  /** When true, render visual indicators for page break blocks */
+  showPageBreaks?: boolean;
 }
 
 /**
@@ -170,7 +179,16 @@ const MemoizedBlockContent = React.memo<{
   />
 ));
 
-export const PagedView: React.FC<PagedViewProps> = ({
+/** Detect whether a block HTML string is a page break element */
+function isPageBreakBlock(blockHTML: string): boolean {
+  const s = blockHTML.replace(/\s+/g, ' ').toLowerCase();
+  return (
+    (s.includes('break-before') && s.includes('page')) ||
+    (s.includes('page-break-before') && s.includes('always'))
+  );
+}
+
+export const PagedView = forwardRef<PagedViewHandle, PagedViewProps>(({
   html,
   css,
   pageConfig,
@@ -178,7 +196,8 @@ export const PagedView: React.FC<PagedViewProps> = ({
   editableManager: _editableManager,
   onContentChange,
   onPaginationChange,
-}) => {
+  showPageBreaks = false,
+}, ref) => {
   const measureRef = useRef<HTMLDivElement>(null);
   const pagesContainerRef = useRef<HTMLDivElement>(null);
   const mutationObserverRef = useRef<MutationObserver | null>(null);
@@ -229,14 +248,16 @@ export const PagedView: React.FC<PagedViewProps> = ({
   }, []);
 
   // ----------------------------------------------------------
-  // Shared pagination: measure + paginate any HTML string
+  // Shared pagination: measure + paginate with block splitting
   // ----------------------------------------------------------
 
   const paginateHTML = useCallback((htmlContent: string) => {
     if (!measureRef.current) return;
 
     const mc = measureRef.current;
-    mc.style.width = `${layoutEngine.getContentAreaWidth()}px`;
+    const contentWidth = layoutEngine.getContentAreaWidth();
+    const contentHeight = layoutEngine.getContentAreaHeight();
+    mc.style.width = `${contentWidth}px`;
     mc.style.position = 'absolute';
     mc.style.left = '-9999px';
     mc.style.top = '0';
@@ -253,26 +274,164 @@ export const PagedView: React.FC<PagedViewProps> = ({
     wrapper.innerHTML = htmlContent;
     mc.appendChild(wrapper);
 
+    // Measure all blocks
     const measurements = layoutEngine.measureBlocks(wrapper);
-    const blockHTMLs = measurements.map(
-      (m) => (m.element.cloneNode(true) as HTMLElement).outerHTML
-    );
-    const result = layoutEngine.paginate(measurements);
 
-    const pageData: PageData[] = result.pages.map((page) => ({
-      blocks: page.blockIndices.map((idx) => blockHTMLs[idx]),
-    }));
+    // Build a queue of blocks to paginate (with splitting)
+    interface QueueItem {
+      html: string;
+      height: number;
+      element: HTMLElement;
+      breakBefore: boolean;
+      breakAfter: boolean;
+    }
+
+    const queue: QueueItem[] = measurements.map((m) => {
+      const el = m.element;
+      return {
+        html: (el.cloneNode(true) as HTMLElement).outerHTML,
+        height: m.height,
+        element: el,
+        breakBefore: m.breakBefore,
+        breakAfter: m.breakAfter,
+      };
+    });
+
+    // Paginate with splitting
+    const pages: string[][] = [];
+    let currentPage: string[] = [];
+    let currentHeight = 0;
+
+    let i = 0;
+    while (i < queue.length) {
+      const block = queue[i];
+
+      // Handle break-before
+      if (block.breakBefore && currentPage.length > 0) {
+        pages.push(currentPage);
+        currentPage = [];
+        currentHeight = 0;
+      }
+
+      const remainingSpace = contentHeight - currentHeight;
+
+      if (block.height <= remainingSpace) {
+        // Block fits entirely on current page
+        currentPage.push(block.html);
+        currentHeight += block.height;
+      } else if (currentPage.length > 0 && remainingSpace >= 60) {
+        // Current page has content and enough remaining space to try a split
+        const splitResult = trySplitBlock(block.element, remainingSpace);
+        if (splitResult) {
+          // First half goes on current page
+          currentPage.push(splitResult.firstHTML);
+          pages.push(currentPage);
+          currentPage = [];
+          currentHeight = 0;
+
+          // Measure the second half and insert it into the queue
+          const tempEl = document.createElement('div');
+          tempEl.innerHTML = splitResult.secondHTML;
+          const newElement = tempEl.firstElementChild as HTMLElement;
+          wrapper.appendChild(newElement);
+
+          const rect = newElement.getBoundingClientRect();
+          const style = window.getComputedStyle(newElement);
+          const marginTop = parseFloat(style.marginTop) || 0;
+          const marginBottom = parseFloat(style.marginBottom) || 0;
+
+          queue.splice(i + 1, 0, {
+            html: newElement.outerHTML,
+            height: rect.height + marginTop + marginBottom,
+            element: newElement,
+            breakBefore: false,
+            breakAfter: block.breakAfter,
+          });
+        } else {
+          // Can't split — move to next page
+          pages.push(currentPage);
+          currentPage = [block.html];
+          currentHeight = block.height;
+        }
+      } else if (currentPage.length > 0) {
+        // Not enough remaining space — move block to next page
+        pages.push(currentPage);
+        currentPage = [block.html];
+        currentHeight = block.height;
+      } else {
+        // Block is first on the page and taller than page — try to split
+        const splitResult = trySplitBlock(block.element, contentHeight);
+        if (splitResult) {
+          currentPage.push(splitResult.firstHTML);
+          pages.push(currentPage);
+          currentPage = [];
+          currentHeight = 0;
+
+          // Measure and queue the second half
+          const tempEl = document.createElement('div');
+          tempEl.innerHTML = splitResult.secondHTML;
+          const newElement = tempEl.firstElementChild as HTMLElement;
+          wrapper.appendChild(newElement);
+
+          const rect = newElement.getBoundingClientRect();
+          const style = window.getComputedStyle(newElement);
+          const marginTop = parseFloat(style.marginTop) || 0;
+          const marginBottom = parseFloat(style.marginBottom) || 0;
+
+          queue.splice(i + 1, 0, {
+            html: newElement.outerHTML,
+            height: rect.height + marginTop + marginBottom,
+            element: newElement,
+            breakBefore: false,
+            breakAfter: block.breakAfter,
+          });
+        } else {
+          // Can't split — place on its own page (overflows)
+          currentPage.push(block.html);
+          pages.push(currentPage);
+          currentPage = [];
+          currentHeight = 0;
+        }
+      }
+
+      // Handle break-after
+      if (block.breakAfter && currentPage.length > 0) {
+        pages.push(currentPage);
+        currentPage = [];
+        currentHeight = 0;
+      }
+
+      i++;
+    }
+
+    // Push the last page
+    if (currentPage.length > 0) {
+      pages.push(currentPage);
+    }
+    if (pages.length === 0) {
+      pages.push([]);
+    }
 
     mc.innerHTML = '';
 
+    const pageData: PageData[] = pages.map((blocks) => ({ blocks }));
+    const paginationResult: PaginationResult = {
+      pages: pages.map((_, idx) => ({ blockIndices: Array.from({ length: pages[idx].length }, (__, j) => j) })),
+      pageCount: pages.length,
+    };
+
     pagesRef.current = pageData;
     setPages(pageData);
-    onPaginationChange?.(result);
+    onPaginationChange?.(paginationResult);
     onContentChangeRef.current?.(htmlContent);
   }, [css, layoutEngine, onPaginationChange]);
 
   // ----------------------------------------------------------
   // Live re-pagination — runs after user edits change block sizes
+  // ----------------------------------------------------------
+  // 1. Collect block HTML from the live DOM
+  // 2. Recombine any previously-split blocks
+  // 3. Re-paginate with splitting (uses paginateHTML)
   // ----------------------------------------------------------
 
   const rePaginateFromDOM = useCallback(() => {
@@ -285,16 +444,21 @@ export const PagedView: React.FC<PagedViewProps> = ({
 
     // Collect block HTML from the live DOM
     const contentDivs = container.querySelectorAll('.dopecanvas-block-content');
-    const blockHTMLs: string[] = [];
+    const rawBlockHTMLs: string[] = [];
     contentDivs.forEach((div) => {
       const content = div.firstElementChild as HTMLElement;
-      if (content) blockHTMLs.push(content.outerHTML);
+      if (content) rawBlockHTMLs.push(content.outerHTML);
     });
-    if (blockHTMLs.length === 0) return;
+    if (rawBlockHTMLs.length === 0) return;
+
+    // Recombine any previously-split blocks before re-measuring
+    const recombined = recombineSplitBlocks(rawBlockHTMLs);
+    const htmlContent = recombined.join('\n');
 
     // Set up hidden measure container
     const mc = measureRef.current;
     const contentWidth = layoutEngine.getContentAreaWidth();
+    const contentHeight = layoutEngine.getContentAreaHeight();
     mc.style.width = `${contentWidth}px`;
     mc.style.position = 'absolute';
     mc.style.left = '-9999px';
@@ -309,35 +473,154 @@ export const PagedView: React.FC<PagedViewProps> = ({
     }
 
     const measureWrapper = document.createElement('div');
-    measureWrapper.innerHTML = blockHTMLs.join('\n');
+    measureWrapper.innerHTML = htmlContent;
     mc.appendChild(measureWrapper);
 
-    // Measure and paginate
+    // Measure all blocks
     const measurements = layoutEngine.measureBlocks(measureWrapper);
-    const measuredHTMLs = measurements.map(
-      (m) => (m.element.cloneNode(true) as HTMLElement).outerHTML
-    );
-    const result = layoutEngine.paginate(measurements);
+
+    // Build queue for splitting pagination
+    interface QueueItem {
+      html: string;
+      height: number;
+      element: HTMLElement;
+      breakBefore: boolean;
+      breakAfter: boolean;
+    }
+
+    const queue: QueueItem[] = measurements.map((m) => ({
+      html: (m.element.cloneNode(true) as HTMLElement).outerHTML,
+      height: m.height,
+      element: m.element,
+      breakBefore: m.breakBefore,
+      breakAfter: m.breakAfter,
+    }));
+
+    // Paginate with splitting (same algorithm as paginateHTML)
+    const pages: string[][] = [];
+    let currentPage: string[] = [];
+    let currentPageHeight = 0;
+
+    let idx = 0;
+    while (idx < queue.length) {
+      const block = queue[idx];
+
+      if (block.breakBefore && currentPage.length > 0) {
+        pages.push(currentPage);
+        currentPage = [];
+        currentPageHeight = 0;
+      }
+
+      const remainingSpace = contentHeight - currentPageHeight;
+
+      if (block.height <= remainingSpace) {
+        currentPage.push(block.html);
+        currentPageHeight += block.height;
+      } else if (currentPage.length > 0 && remainingSpace >= 60) {
+        const splitResult = trySplitBlock(block.element, remainingSpace);
+        if (splitResult) {
+          currentPage.push(splitResult.firstHTML);
+          pages.push(currentPage);
+          currentPage = [];
+          currentPageHeight = 0;
+
+          const tempEl = document.createElement('div');
+          tempEl.innerHTML = splitResult.secondHTML;
+          const newElement = tempEl.firstElementChild as HTMLElement;
+          measureWrapper.appendChild(newElement);
+
+          const rect = newElement.getBoundingClientRect();
+          const st = window.getComputedStyle(newElement);
+          const mt = parseFloat(st.marginTop) || 0;
+          const mb = parseFloat(st.marginBottom) || 0;
+
+          queue.splice(idx + 1, 0, {
+            html: newElement.outerHTML,
+            height: rect.height + mt + mb,
+            element: newElement,
+            breakBefore: false,
+            breakAfter: block.breakAfter,
+          });
+        } else {
+          pages.push(currentPage);
+          currentPage = [block.html];
+          currentPageHeight = block.height;
+        }
+      } else if (currentPage.length > 0) {
+        pages.push(currentPage);
+        currentPage = [block.html];
+        currentPageHeight = block.height;
+      } else {
+        const splitResult = trySplitBlock(block.element, contentHeight);
+        if (splitResult) {
+          currentPage.push(splitResult.firstHTML);
+          pages.push(currentPage);
+          currentPage = [];
+          currentPageHeight = 0;
+
+          const tempEl = document.createElement('div');
+          tempEl.innerHTML = splitResult.secondHTML;
+          const newElement = tempEl.firstElementChild as HTMLElement;
+          measureWrapper.appendChild(newElement);
+
+          const rect = newElement.getBoundingClientRect();
+          const st = window.getComputedStyle(newElement);
+          const mt = parseFloat(st.marginTop) || 0;
+          const mb = parseFloat(st.marginBottom) || 0;
+
+          queue.splice(idx + 1, 0, {
+            html: newElement.outerHTML,
+            height: rect.height + mt + mb,
+            element: newElement,
+            breakBefore: false,
+            breakAfter: block.breakAfter,
+          });
+        } else {
+          currentPage.push(block.html);
+          pages.push(currentPage);
+          currentPage = [];
+          currentPageHeight = 0;
+        }
+      }
+
+      if (block.breakAfter && currentPage.length > 0) {
+        pages.push(currentPage);
+        currentPage = [];
+        currentPageHeight = 0;
+      }
+
+      idx++;
+    }
+
+    if (currentPage.length > 0) pages.push(currentPage);
+    if (pages.length === 0) pages.push([]);
+
     mc.innerHTML = '';
 
     // Build new page data
-    const newPages: PageData[] = result.pages.map((p) => ({
-      blocks: p.blockIndices.map((idx) => measuredHTMLs[idx]),
-    }));
+    const newPageData: PageData[] = pages.map((blocks) => ({ blocks }));
 
-    // Only re-render if the block distribution across pages actually changed
+    // Only re-render if the page structure actually changed
     const oldDist = pagesRef.current.map((p) => p.blocks.length);
-    const newDist = newPages.map((p) => p.blocks.length);
-    const changed =
+    const newDist = newPageData.map((p) => p.blocks.length);
+    const distChanged =
       oldDist.length !== newDist.length ||
       oldDist.some((count, i) => count !== newDist[i]);
 
-    if (changed) {
+    // Also check if any block HTML changed (split boundaries moved)
+    const oldHTMLs = pagesRef.current.flatMap((p) => p.blocks).join('');
+    const newHTMLs = newPageData.flatMap((p) => p.blocks).join('');
+    const contentChanged = oldHTMLs !== newHTMLs;
+
+    if (distChanged || contentChanged) {
       isRePaginatingRef.current = true;
       pendingCursorRef.current = cursor;
-      pagesRef.current = newPages;
-      setPages(newPages);
-      onPaginationChange?.(result);
+      pagesRef.current = newPageData;
+      setPages(newPageData);
+      onPaginationChange?.({
+        pages: pages.map(() => ({ blockIndices: [] })),
+        pageCount: pages.length,
+      });
     }
   }, [css, layoutEngine, onPaginationChange]);
 
@@ -454,6 +737,39 @@ export const PagedView: React.FC<PagedViewProps> = ({
   }, []);
 
   // ----------------------------------------------------------
+  // Page break insertion
+  // ----------------------------------------------------------
+
+  /** Insert a page break after the block containing the cursor, or at the end */
+  const insertPageBreak = useCallback(() => {
+    const PAGE_BREAK_HTML = '<div style="break-before: page;"></div>';
+    const blocks = collectBlocksFromDOM();
+
+    // Try to find which block the cursor is in
+    let insertIdx = blocks.length; // default: append at end
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && pagesContainerRef.current) {
+      const anchorNode = sel.getRangeAt(0).startContainer;
+      const wrappers = Array.from(
+        pagesContainerRef.current.querySelectorAll('.dopecanvas-block-content')
+      );
+      const cursorBlockIdx = wrappers.findIndex((w) => w.contains(anchorNode));
+      if (cursorBlockIdx !== -1) {
+        insertIdx = cursorBlockIdx + 1;
+      }
+    }
+
+    blocks.splice(insertIdx, 0, PAGE_BREAK_HTML);
+    setHoveredBlockIndex(null);
+    paginateHTML(blocks.join('\n'));
+  }, [collectBlocksFromDOM, paginateHTML]);
+
+  // Expose methods to parent via ref
+  useImperativeHandle(ref, () => ({
+    insertPageBreak,
+  }), [insertPageBreak]);
+
+  // ----------------------------------------------------------
   // After pages render: make editable + observe changes
   // ----------------------------------------------------------
 
@@ -564,6 +880,57 @@ export const PagedView: React.FC<PagedViewProps> = ({
                   !lower.startsWith('<script') && !lower.startsWith('<style');
 
                 const isTable = lower.startsWith('<table');
+                const isPageBreak = isPageBreakBlock(blockHTML);
+
+                // Page break indicator (when showPageBreaks is on)
+                if (isPageBreak && showPageBreaks) {
+                  return (
+                    <div
+                      key={`${pageIndex}-${blockIndex}`}
+                      className="dopecanvas-block-wrapper"
+                      style={{ position: 'relative' }}
+                    >
+                      {/* Hidden original block so DOM collection still picks it up */}
+                      <div
+                        className="dopecanvas-block-content"
+                        style={{ display: 'none' }}
+                        dangerouslySetInnerHTML={{ __html: blockHTML }}
+                      />
+                      {/* Visual indicator */}
+                      <div style={pageBreakIndicatorStyle}>
+                        <span style={pageBreakLineStyle} />
+                        <span style={pageBreakLabelStyle}>Page Break</span>
+                        <span style={pageBreakLineStyle} />
+                        <button
+                          type="button"
+                          title="Remove page break"
+                          onClick={() => handleDeleteBlock(globalIdx)}
+                          onMouseDown={(e) => e.preventDefault()}
+                          style={pageBreakRemoveBtnStyle}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // Page break block when indicator is hidden — still render
+                // the hidden block content so DOM collection works
+                if (isPageBreak) {
+                  return (
+                    <div
+                      key={`${pageIndex}-${blockIndex}`}
+                      className="dopecanvas-block-wrapper"
+                      style={{ position: 'relative' }}
+                    >
+                      <div
+                        className="dopecanvas-block-content"
+                        dangerouslySetInnerHTML={{ __html: blockHTML }}
+                      />
+                    </div>
+                  );
+                }
 
                 return (
                   <div
@@ -633,7 +1000,7 @@ export const PagedView: React.FC<PagedViewProps> = ({
       )}
     </div>
   );
-};
+});
 
 // ----------------------------------------------------------
 // Styles
@@ -654,4 +1021,46 @@ const pagesWrapperStyle: React.CSSProperties = {
   alignItems: 'center',
   gap: '24px',
   padding: '24px 0',
+};
+
+// Page break indicator styles
+const pageBreakIndicatorStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '6px 0',
+  userSelect: 'none',
+};
+
+const pageBreakLineStyle: React.CSSProperties = {
+  flex: 1,
+  height: 0,
+  borderTop: '2px dashed #b0b0b0',
+};
+
+const pageBreakLabelStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  color: '#888',
+  textTransform: 'uppercase',
+  letterSpacing: '0.05em',
+  whiteSpace: 'nowrap',
+  fontFamily: 'system-ui, -apple-system, sans-serif',
+};
+
+const pageBreakRemoveBtnStyle: React.CSSProperties = {
+  width: 20,
+  height: 20,
+  border: '1px solid #ccc',
+  borderRadius: 4,
+  backgroundColor: '#fff',
+  cursor: 'pointer',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontSize: 11,
+  color: '#999',
+  padding: 0,
+  flexShrink: 0,
+  lineHeight: 1,
 };

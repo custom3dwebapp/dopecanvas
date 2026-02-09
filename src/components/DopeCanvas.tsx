@@ -17,6 +17,7 @@
 
 import React, { useMemo, useCallback, useState, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { PagedView } from './PagedView';
+import type { PagedViewHandle } from './PagedView';
 import { PageLayoutEngine } from '../core/PageLayoutEngine';
 import { EditableManager } from '../core/EditableManager';
 import type {
@@ -57,6 +58,14 @@ export interface DopeCanvasHandle {
   undo: () => boolean;
   /** Redo the last undone edit. Returns false if nothing to redo. */
   redo: () => boolean;
+
+  // Page breaks
+  /** Insert a page break after the block at the cursor (or at end) */
+  insertPageBreak: () => void;
+  /** Show or hide visual page break indicators */
+  setShowPageBreaks: (show: boolean) => void;
+  /** Get the current show-page-breaks state */
+  getShowPageBreaks: () => boolean;
 }
 
 // ----------------------------------------------------------
@@ -97,6 +106,11 @@ export const DopeCanvas = forwardRef<DopeCanvasHandle, DopeCanvasProps>(({
   const currentHTMLRef = useRef(html);
   // Root container ref — used to read live DOM content in getHTML()
   const rootRef = useRef<HTMLDivElement>(null);
+  // PagedView ref — used for page break insertion
+  const pagedViewRef = useRef<PagedViewHandle>(null);
+
+  // Page break visibility toggle
+  const [showPageBreaks, setShowPageBreaks] = useState(false);
 
   // Stable callback ref for onContentChange so PagedView doesn't re-render
   const onContentChangeRef = useRef(onContentChange);
@@ -207,7 +221,14 @@ export const DopeCanvas = forwardRef<DopeCanvasHandle, DopeCanvasProps>(({
     },
     undo: () => editableManager.undo(),
     redo: () => editableManager.redo(),
-  }), [editableManager, pageConfig, paginationResult.pageCount, handlePageConfigChange]);
+    insertPageBreak: () => {
+      pagedViewRef.current?.insertPageBreak();
+    },
+    setShowPageBreaks: (show: boolean) => {
+      setShowPageBreaks(show);
+    },
+    getShowPageBreaks: () => showPageBreaks,
+  }), [editableManager, pageConfig, paginationResult.pageCount, handlePageConfigChange, showPageBreaks]);
 
   return (
     <div
@@ -224,6 +245,7 @@ export const DopeCanvas = forwardRef<DopeCanvasHandle, DopeCanvasProps>(({
     >
       {/* Paged document view */}
       <PagedView
+        ref={pagedViewRef}
         html={html}
         css={css}
         pageConfig={pageConfig}
@@ -231,6 +253,7 @@ export const DopeCanvas = forwardRef<DopeCanvasHandle, DopeCanvasProps>(({
         editableManager={editableManager}
         onContentChange={handleContentChange}
         onPaginationChange={handlePaginationChange}
+        showPageBreaks={showPageBreaks}
       />
     </div>
   );

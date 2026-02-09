@@ -15,6 +15,8 @@ export type { DopeCanvasProps, DopeCanvasHandle } from './components/DopeCanvas'
 export { PageLayoutEngine } from './core/PageLayoutEngine';
 export { EditableManager } from './core/EditableManager';
 export { DocumentEngine } from './core/DocumentEngine';
+export { trySplitBlock, recombineSplitBlocks } from './core/BlockSplitter';
+export type { SplitResult } from './core/BlockSplitter';
 
 // API
 export { DocumentAPI } from './api/DocumentAPI';
@@ -34,6 +36,7 @@ export type {
   PageContent,
   BlockMeasurement,
   ToolbarContext,
+  FormattingState,
   Unsubscribe,
 } from './core/types';
 
@@ -46,3 +49,5 @@ export {
 // Hooks
 export { useDocumentEngine } from './hooks/useDocumentEngine';
 export { useSelectionContext, useFormattingState } from './hooks/useSelectionContext';
+export { useSelectionSaver } from './hooks/useSelectionSaver';
+export type { SelectionSaver } from './hooks/useSelectionSaver';
