@@ -2305,7 +2305,9 @@ const styles = {
 
   topBarActionBtn: {
     padding: '5px 12px',
-    border: '1px solid #e0deda',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: '#e0deda',
     borderRadius: 6,
     backgroundColor: '#fff',
     cursor: 'pointer',
@@ -2347,7 +2349,9 @@ const styles = {
   fmtBtn: {
     width: 28,
     height: 28,
-    border: '1px solid transparent',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'transparent',
     borderRadius: 4,
     backgroundColor: 'transparent',
     cursor: 'pointer',

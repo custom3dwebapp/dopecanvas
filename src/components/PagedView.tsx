@@ -237,9 +237,21 @@ export const PagedView = forwardRef<PagedViewHandle, PagedViewProps>(({
 
     const htmlParts: string[] = [];
     contentDivs.forEach((contentDiv) => {
-      const content = contentDiv.firstElementChild as HTMLElement;
-      if (content) {
-        htmlParts.push(content.outerHTML);
+      const div = contentDiv as HTMLElement;
+      const children = div.children;
+      
+      if (children.length === 0) {
+        // Empty block - skip
+        return;
+      } else if (children.length === 1) {
+        // Single child - use its outerHTML (original behavior)
+        htmlParts.push((children[0] as HTMLElement).outerHTML);
+      } else {
+        // Multiple children (user pressed Enter and created new lines)
+        // Wrap them in a div to keep as one block
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = div.innerHTML;
+        htmlParts.push(wrapper.outerHTML);
       }
     });
 
@@ -445,9 +457,23 @@ export const PagedView = forwardRef<PagedViewHandle, PagedViewProps>(({
     // Collect block HTML from the live DOM
     const contentDivs = container.querySelectorAll('.dopecanvas-block-content');
     const rawBlockHTMLs: string[] = [];
-    contentDivs.forEach((div) => {
-      const content = div.firstElementChild as HTMLElement;
-      if (content) rawBlockHTMLs.push(content.outerHTML);
+    contentDivs.forEach((contentDiv) => {
+      const div = contentDiv as HTMLElement;
+      const children = div.children;
+      
+      if (children.length === 0) {
+        // Empty block - skip
+        return;
+      } else if (children.length === 1) {
+        // Single child - use its outerHTML (original behavior)
+        rawBlockHTMLs.push((children[0] as HTMLElement).outerHTML);
+      } else {
+        // Multiple children (user pressed Enter and created new lines)
+        // Wrap them in a div to keep as one block
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = div.innerHTML;
+        rawBlockHTMLs.push(wrapper.outerHTML);
+      }
     });
     if (rawBlockHTMLs.length === 0) return;
 
@@ -600,19 +626,15 @@ export const PagedView = forwardRef<PagedViewHandle, PagedViewProps>(({
     // Build new page data
     const newPageData: PageData[] = pages.map((blocks) => ({ blocks }));
 
-    // Only re-render if the page structure actually changed
+    // Only re-render if the PAGE STRUCTURE changed (blocks moved between pages)
+    // NOT when content within a block changes - the live DOM already has correct content
     const oldDist = pagesRef.current.map((p) => p.blocks.length);
     const newDist = newPageData.map((p) => p.blocks.length);
-    const distChanged =
+    const pageStructureChanged =
       oldDist.length !== newDist.length ||
       oldDist.some((count, i) => count !== newDist[i]);
 
-    // Also check if any block HTML changed (split boundaries moved)
-    const oldHTMLs = pagesRef.current.flatMap((p) => p.blocks).join('');
-    const newHTMLs = newPageData.flatMap((p) => p.blocks).join('');
-    const contentChanged = oldHTMLs !== newHTMLs;
-
-    if (distChanged || contentChanged) {
+    if (pageStructureChanged) {
       isRePaginatingRef.current = true;
       pendingCursorRef.current = cursor;
       pagesRef.current = newPageData;
@@ -621,6 +643,10 @@ export const PagedView = forwardRef<PagedViewHandle, PagedViewProps>(({
         pages: pages.map(() => ({ blockIndices: [] })),
         pageCount: pages.length,
       });
+    } else {
+      // Update the ref without triggering re-render
+      // This keeps the saved HTML in sync for getHTML() calls
+      pagesRef.current = newPageData;
     }
   }, [css, layoutEngine, onPaginationChange]);
 
@@ -809,10 +835,12 @@ export const PagedView = forwardRef<PagedViewHandle, PagedViewProps>(({
     const observer = new MutationObserver(() => {
       if (isRePaginatingRef.current) return;
       if (debounceTimer) clearTimeout(debounceTimer);
+      // Use longer debounce to avoid erratic behavior during normal typing
+      // Re-pagination only needs to happen when content size changes significantly
       debounceTimer = setTimeout(() => {
         collectHTMLFromDOM();
         rePaginateFromDOMRef.current();
-      }, 300);
+      }, 800);
     });
 
     observer.observe(container, {

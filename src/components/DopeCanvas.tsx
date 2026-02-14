@@ -189,9 +189,23 @@ export const DopeCanvas = forwardRef<DopeCanvasHandle, DopeCanvasProps>(({
         );
         if (contentDivs.length > 0) {
           const parts: string[] = [];
-          contentDivs.forEach((div) => {
-            const child = div.firstElementChild as HTMLElement;
-            if (child) parts.push(child.outerHTML);
+          contentDivs.forEach((contentDiv) => {
+            const div = contentDiv as HTMLElement;
+            const children = div.children;
+            
+            if (children.length === 0) {
+              // Empty block - skip
+              return;
+            } else if (children.length === 1) {
+              // Single child - use its outerHTML (preserves original structure)
+              parts.push((children[0] as HTMLElement).outerHTML);
+            } else {
+              // Multiple children (user pressed Enter and created new lines)
+              // Wrap them in a div to keep as one block
+              const wrapper = document.createElement('div');
+              wrapper.innerHTML = div.innerHTML;
+              parts.push(wrapper.outerHTML);
+            }
           });
           if (parts.length > 0) {
             const freshHTML = parts.join('\n');
@@ -208,9 +222,19 @@ export const DopeCanvas = forwardRef<DopeCanvasHandle, DopeCanvasProps>(({
         ? (() => {
             const divs = rootRef.current!.querySelectorAll('.dopecanvas-block-content');
             const parts: string[] = [];
-            divs.forEach((d) => {
-              const child = d.firstElementChild as HTMLElement;
-              if (child) parts.push(child.outerHTML);
+            divs.forEach((contentDiv) => {
+              const div = contentDiv as HTMLElement;
+              const children = div.children;
+              
+              if (children.length === 0) {
+                return;
+              } else if (children.length === 1) {
+                parts.push((children[0] as HTMLElement).outerHTML);
+              } else {
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = div.innerHTML;
+                parts.push(wrapper.outerHTML);
+              }
             });
             return parts.length > 0 ? parts.join('\n') : currentHTMLRef.current;
           })()
