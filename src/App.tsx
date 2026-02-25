@@ -574,6 +574,8 @@ function App() {
 
   // Page break visibility toggle
   const [showPageBreaks, setShowPageBreaks] = useState(false);
+  // Editor layout mode
+  const [editorRenderMode, setEditorRenderMode] = useState<'paged' | 'flow'>('paged');
 
   // Icon picker state for blank documents
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
@@ -1489,6 +1491,17 @@ function App() {
           >
             ¶
           </button>
+          <span style={styles.fmtDivider} />
+          <button
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setEditorRenderMode((prev) => (prev === 'paged' ? 'flow' : 'paged'));
+            }}
+            style={{ ...styles.fmtBtn, width: 'auto', padding: '0 8px', ...(editorRenderMode === 'flow' ? styles.fmtBtnActive : {}) }}
+            title={editorRenderMode === 'flow' ? 'Switch to Paginated View' : 'Switch to Flow View'}
+          >
+            {editorRenderMode === 'flow' ? 'Flow' : 'Paged'}
+          </button>
         </div>
 
         {/* ====== Canvas ====== */}
@@ -1496,6 +1509,7 @@ function App() {
           <DopeCanvas
             ref={canvasRef}
             html={html}
+            renderMode={editorRenderMode}
             onContentChange={handleContentChange}
           />
         </div>
